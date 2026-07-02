@@ -172,6 +172,7 @@ pub struct App {
     pub quit: bool,
     pub update: UpdateStatus,
     pub update_requested: bool,
+    pub check_requested: bool, // ask the main loop for a fresh update check
     // Hit-test data, written by ui::draw each frame:
     pub canvas_area: Rect,              // inner canvas area (terminal coords)
     pub palette_cells: Vec<(Rect, u8)>, // clickable color swatches
@@ -209,6 +210,7 @@ impl App {
             quit: false,
             update: UpdateStatus::Checking,
             update_requested: false,
+            check_requested: false,
             canvas_area: Rect::default(),
             palette_cells: Vec::new(),
             tool_cells: Vec::new(),
@@ -508,7 +510,9 @@ impl App {
                 if matches!(self.update, UpdateStatus::Available { .. }) {
                     self.update_requested = true;
                 } else {
-                    self.status = "no update available".to_string();
+                    // no update known — kick off a fresh check instead of refusing
+                    self.check_requested = true;
+                    self.status = "checking for updates…".to_string();
                 }
             }
             KeyCode::Char('r') => {

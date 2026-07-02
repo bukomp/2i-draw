@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2021"
 repository = "ssh://git@priv-github.com/bukomp/2i-draw.git"
 
+# package names can't start with a digit; the shipped binary is named 2idraw
+[[bin]]
+name = "2idraw"
+path = "src/main.rs"
+
 [dependencies]
 ratatui = "0.29"
 image = { version = "0.25", default-features = false, features = ["png"] }

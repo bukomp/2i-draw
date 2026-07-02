@@ -68,7 +68,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
-        .title(" ✦ idraw ")
+        .title(" ✦ 2idraw ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(ACCENT));

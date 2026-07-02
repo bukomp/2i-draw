@@ -1,4 +1,4 @@
-# idraw
+# 2idraw
 
 A small, stylish terminal painting app. Each terminal cell holds two pixels
 (half-block rendering), with a pico-8-inspired 16-color palette.
@@ -7,7 +7,7 @@ A small, stylish terminal painting app. Each terminal cell holds two pixels
 cargo run --release
 ```
 
-Or install the `idraw` binary to `~/.cargo/bin`:
+Or install the `2idraw` binary to `~/.cargo/bin`:
 
 ```
 cargo install --path .

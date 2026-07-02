@@ -11,7 +11,7 @@ pub enum UpdateStatus {
     Checking,
     UpToDate,
     Available { commit: String },
-    CheckFailed(#[allow(dead_code)] String), // reason kept for Debug/diagnostics
+    CheckFailed(String),
 }
 
 /// git command that can never prompt/hang. Only sets current_dir(REPO_DIR)
@@ -195,7 +195,7 @@ pub fn perform_update() -> anyhow::Result<PathBuf> {
             PathBuf::from(home).join(".cargo").join("bin")
         }
     };
-    let bin = cargo_bin_dir.join("idraw");
+    let bin = cargo_bin_dir.join("2idraw");
 
     if !bin.exists() {
         anyhow::bail!("expected installed binary at {} but it does not exist", bin.display());

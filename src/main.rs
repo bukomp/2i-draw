@@ -50,11 +50,11 @@ fn main() -> Result<()> {
     install_panic_hook();
 
     let mut app = App::new();
-    let rx = update::spawn_check();
+    let mut rx = update::spawn_check();
 
     loop {
         let mut terminal = setup_terminal()?;
-        let outcome = run(&mut terminal, &mut app, &rx);
+        let outcome = run(&mut terminal, &mut app, &mut rx);
         restore_terminal();
         let _ = terminal.show_cursor();
         match outcome? {
@@ -62,7 +62,7 @@ fn main() -> Result<()> {
             Outcome::Update => {
                 app.update_requested = false;
                 println!(
-                    "⬆ updating idraw ({} → latest)...",
+                    "⬆ updating 2idraw ({} → latest)...",
                     &update::BUILD_COMMIT[..update::BUILD_COMMIT.len().min(7)]
                 );
                 match update::perform_update() {
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                         }
                         #[cfg(not(unix))]
                         {
-                            println!("restart idraw to use the new version: {}", bin.display());
+                            println!("restart 2idraw to use the new version: {}", bin.display());
                         }
                         break;
                     }
@@ -92,16 +92,49 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+const AUTO_CHECK_EVERY: Duration = Duration::from_secs(300);
+
 fn run(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
-    rx: &std::sync::mpsc::Receiver<update::UpdateStatus>,
+    rx: &mut std::sync::mpsc::Receiver<update::UpdateStatus>,
 ) -> Result<Outcome> {
+    let mut last_check = std::time::Instant::now();
+    let mut manual_check = false;
     loop {
+        if app.check_requested {
+            // user pressed U with no update known — re-check now
+            app.check_requested = false;
+            app.update = update::UpdateStatus::Checking;
+            *rx = update::spawn_check();
+            last_check = std::time::Instant::now();
+            manual_check = true;
+        } else if last_check.elapsed() >= AUTO_CHECK_EVERY
+            && !matches!(
+                app.update,
+                update::UpdateStatus::Checking | update::UpdateStatus::Available { .. }
+            )
+        {
+            app.update = update::UpdateStatus::Checking;
+            *rx = update::spawn_check();
+            last_check = std::time::Instant::now();
+            manual_check = false;
+        }
+
         if let Ok(st) = rx.try_recv() {
-            if let update::UpdateStatus::Available { commit } = &st {
-                let short = &commit[..commit.len().min(7)];
-                app.status = format!("update available ({short}) — press U");
+            match &st {
+                update::UpdateStatus::Available { commit } => {
+                    let short = &commit[..commit.len().min(7)];
+                    app.status = format!("update available ({short}) — press U");
+                }
+                // only announce quiet results when the user asked for the check
+                update::UpdateStatus::UpToDate if manual_check => {
+                    app.status = "2idraw is up to date".to_string();
+                }
+                update::UpdateStatus::CheckFailed(e) if manual_check => {
+                    app.status = format!("update check failed: {e}");
+                }
+                _ => {}
             }
             app.update = st;
         }
