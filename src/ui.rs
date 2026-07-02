@@ -1,5 +1,5 @@
 use crate::app::{App, Tool};
-use crate::canvas::PALETTE;
+use crate::canvas::hsv_to_rgb;
 use crate::update::UpdateStatus;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -58,6 +58,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.show_help {
         draw_help(frame, frame.area());
     }
+
+    draw_picker(frame, app);
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -124,7 +126,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         for col in 0..2u8 {
             let idx = row * 2 + col;
-            if idx as usize >= PALETTE.len() {
+            if idx as usize >= app.canvas.palette.len() {
                 continue;
             }
             let x = inner.x + col as u16 * (SWATCH_W + GAP);
@@ -133,7 +135,7 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let selected = app.color == idx;
             let marker = if selected { '▸' } else { ' ' };
-            let (r, g, b) = PALETTE[idx as usize];
+            let (r, g, b) = app.canvas.palette[idx as usize];
             buf.set_string(x, y, marker.to_string(), Style::default());
             let swatch_rect = Rect::new(x, y, SWATCH_W, 1);
             buf.set_string(
@@ -238,8 +240,8 @@ fn draw_canvas(frame: &mut Frame, app: &mut App, area: Rect) {
                 .selection
                 .map_or(false, |sel| sel.contains(ax, bottom_ay));
 
-            let fg = pixel_color(top, ax, top_ay, top_in_sel);
-            let bg = pixel_color(bottom, ax, bottom_ay, bottom_in_sel);
+            let fg = pixel_color(top, ax, top_ay, top_in_sel, &app.canvas.palette);
+            let bg = pixel_color(bottom, ax, bottom_ay, bottom_in_sel, &app.canvas.palette);
 
             let cx = inner.x + col;
             let cy = inner.y + row;
@@ -285,10 +287,16 @@ fn effective_px(app: &App, x: i32, y: i32) -> Option<u8> {
     app.canvas.get(x, y)
 }
 
-fn pixel_color(px: Option<u8>, x: i32, y: i32, in_sel: bool) -> Color {
+fn pixel_color(
+    px: Option<u8>,
+    x: i32,
+    y: i32,
+    in_sel: bool,
+    palette: &[(u8, u8, u8); 16],
+) -> Color {
     match px {
         Some(i) => {
-            let (r, g, b) = PALETTE[i as usize % PALETTE.len()];
+            let (r, g, b) = palette[i as usize % palette.len()];
             if in_sel {
                 let (ar, ag, ab) = SEL_TINT;
                 let blend = |c: u8, a: u8| -> u8 {
@@ -321,7 +329,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let (r, g, b) = PALETTE[app.color as usize % PALETTE.len()];
+    let (r, g, b) = app.canvas.palette[app.color as usize % app.canvas.palette.len()];
     let left = format!(
         "{} {} │ size {} │ color ",
         app.tool.icon(),
@@ -355,7 +363,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(48, 27, area);
+    let popup = centered_rect(48, 28, area);
     frame.render_widget(Clear, popup);
 
     let lines = vec![
@@ -372,6 +380,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  m         select tool"),
         Line::from("  Tab       cycle tool"),
         Line::from("  1-8       color  [ ]  cycle color"),
+        Line::from("  c         color picker (edit slot)"),
         Line::from("  + / -     brush size"),
         Line::from("  arrows    move cursor"),
         Line::from("  Shift+arrows  pan view"),
@@ -397,4 +406,121 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         .block(block)
         .alignment(Alignment::Left);
     frame.render_widget(para, popup);
+}
+
+fn draw_picker(frame: &mut Frame, app: &mut App) {
+    let Some(picker) = &app.picker else {
+        return;
+    };
+    let (h, s, v) = (picker.h, picker.s, picker.v);
+    let (r, g, b) = hsv_to_rgb(h, s, v);
+
+    let popup = centered_rect(44, 15, frame.area());
+    frame.render_widget(Clear, popup);
+
+    let title = format!(" color {} ", app.color);
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.width == 0 || inner.height == 0 {
+        app.picker_sv_area = Rect::default();
+        app.picker_hue_area = Rect::default();
+        return;
+    }
+
+    let sv_h = inner.height.saturating_sub(4).max(1).min(inner.height);
+    let sv_area = Rect::new(inner.x, inner.y, inner.width, sv_h);
+    let hue_y = (inner.y + sv_h + 1).min(inner.y + inner.height - 1);
+    let hue_area = Rect::new(inner.x, hue_y, inner.width, 1);
+    let readout_y = inner.y + inner.height - 1;
+
+    app.picker_sv_area = sv_area;
+    app.picker_hue_area = hue_area;
+
+    let buf = frame.buffer_mut();
+
+    // SV square
+    if sv_area.width >= 1 && sv_area.height >= 1 {
+        let w = sv_area.width;
+        let rows = sv_area.height;
+        // nearest cell to current (s, v)
+        let cur_col = ((s * (w.saturating_sub(1).max(1)) as f32).round() as u16).min(w.saturating_sub(1));
+        let cur_row = if rows >= 1 {
+            let total_steps = (rows as u32 * 2).saturating_sub(1).max(1) as f32;
+            // v = 1 - (row*2 + 0.5)/total_steps  =>  row = ((1-v)*total_steps - 0.5) / 2
+            let approx = (((1.0 - v) * total_steps - 0.5) / 2.0).round();
+            approx.clamp(0.0, (rows.saturating_sub(1)) as f32) as u16
+        } else {
+            0
+        };
+
+        for row in 0..rows {
+            for col in 0..w {
+                let cs = col as f32 / (w.saturating_sub(1).max(1)) as f32;
+                let total_steps = (rows as u32 * 2).saturating_sub(1).max(1) as f32;
+                let v_top = 1.0 - ((row as f32 * 2.0 + 0.0) / total_steps);
+                let v_bottom = 1.0 - ((row as f32 * 2.0 + 1.0) / total_steps);
+                let (fr, fg_, fb) = hsv_to_rgb(h, cs, v_top.clamp(0.0, 1.0));
+                let (br, bg_, bb) = hsv_to_rgb(h, cs, v_bottom.clamp(0.0, 1.0));
+
+                let cx = sv_area.x + col;
+                let cy = sv_area.y + row;
+                let mut style = Style::default()
+                    .fg(Color::Rgb(fr, fg_, fb))
+                    .bg(Color::Rgb(br, bg_, bb));
+                if col == cur_col && row == cur_row {
+                    style = style.add_modifier(Modifier::REVERSED);
+                }
+                buf.set_string(cx, cy, "▀", style);
+            }
+        }
+    }
+
+    // Hue bar
+    if hue_area.width >= 1 {
+        let w = hue_area.width;
+        let cur_hue_col = ((h / 359.9) * (w.saturating_sub(1).max(1)) as f32)
+            .round()
+            .clamp(0.0, (w.saturating_sub(1)) as f32) as u16;
+        for col in 0..w {
+            let hue = col as f32 / (w.saturating_sub(1).max(1)) as f32 * 359.9;
+            let (hr, hg, hb) = hsv_to_rgb(hue, 1.0, 1.0);
+            let mut style = Style::default().fg(Color::Rgb(hr, hg, hb));
+            if col == cur_hue_col {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            buf.set_string(hue_area.x + col, hue_area.y, "█", style);
+        }
+    }
+
+    // Readout
+    if inner.width >= 1 {
+        let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
+        let text = format!(
+            "  ██ {}   ←→ s · ↑↓ v · [ ] h · Enter ✓ · Esc ✗",
+            hex
+        );
+        let truncated: String = text.chars().take(inner.width as usize).collect();
+        // Render base text dim, then overlay the swatch chars with the color style.
+        buf.set_string(
+            inner.x,
+            readout_y,
+            &truncated,
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        // Overlay the "██" swatch (positioned right after the 2 leading spaces).
+        if truncated.chars().count() >= 4 {
+            buf.set_string(
+                inner.x + 2,
+                readout_y,
+                "██",
+                Style::default().fg(Color::Rgb(r, g, b)),
+            );
+        }
+    }
 }

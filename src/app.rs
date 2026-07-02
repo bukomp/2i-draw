@@ -69,6 +69,18 @@ pub struct Floating {
     pub cells: Vec<Px>,
 }
 
+pub struct PickerState {
+    pub h: f32,
+    pub s: f32,
+    pub v: f32,
+}
+
+impl PickerState {
+    pub fn rgb(&self) -> (u8, u8, u8) {
+        crate::canvas::hsv_to_rgb(self.h, self.s, self.v)
+    }
+}
+
 pub struct App {
     pub canvas: Canvas,
     pub tool: Tool,
@@ -88,6 +100,9 @@ pub struct App {
     pub floating: Option<Floating>, // only alive during a mouse move-drag
     pub view_x: u16,                // pan offset, canvas pixels
     pub view_y: u16,                // pan offset, canvas pixels; always even
+    pub picker: Option<PickerState>,
+    pub picker_sv_area: Rect,  // written by ui each frame while the picker is open
+    pub picker_hue_area: Rect,
     // private:
     drag_last: Option<(i32, i32)>, // last mouse pixel during a stroke
     stroke_active: bool,
@@ -118,6 +133,9 @@ impl App {
             floating: None,
             view_x: 0,
             view_y: 0,
+            picker: None,
+            picker_sv_area: Rect::default(),
+            picker_hue_area: Rect::default(),
             drag_last: None,
             stroke_active: false,
             save_counter: 0,
@@ -209,9 +227,51 @@ impl App {
             return;
         }
 
+        if let Some(picker) = &mut self.picker {
+            match key.code {
+                KeyCode::Esc => {
+                    self.picker = None;
+                    self.status = "picker cancelled".to_string();
+                }
+                KeyCode::Enter => {
+                    let (r, g, b) = picker.rgb();
+                    self.canvas.palette[self.color as usize] = (r, g, b);
+                    self.picker = None;
+                    self.status = format!("color {} = #{:02X}{:02X}{:02X}", self.color, r, g, b);
+                }
+                KeyCode::Left => {
+                    picker.s = (picker.s - 0.02).clamp(0.0, 1.0);
+                }
+                KeyCode::Right => {
+                    picker.s = (picker.s + 0.02).clamp(0.0, 1.0);
+                }
+                KeyCode::Up => {
+                    picker.v = (picker.v + 0.02).clamp(0.0, 1.0);
+                }
+                KeyCode::Down => {
+                    picker.v = (picker.v - 0.02).clamp(0.0, 1.0);
+                }
+                KeyCode::Char('[') => {
+                    picker.h = (picker.h - 4.0).rem_euclid(360.0);
+                }
+                KeyCode::Char(']') => {
+                    picker.h = (picker.h + 4.0).rem_euclid(360.0);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit = true;
+                return;
+            }
+            KeyCode::Char('c') => {
+                let (r, g, b) = self.canvas.palette[self.color as usize];
+                let (h, s, v) = crate::canvas::rgb_to_hsv(r, g, b);
+                self.picker = Some(PickerState { h, s, v });
+                self.status = format!("editing color {} — Enter apply, Esc cancel", self.color);
                 return;
             }
             KeyCode::Char('q') => {
@@ -526,6 +586,44 @@ impl App {
             }
             return;
         }
+
+        if let Some(picker) = &mut self.picker {
+            if matches!(
+                m.kind,
+                MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+            ) {
+                let sv = self.picker_sv_area;
+                let hue = self.picker_hue_area;
+                if m.column >= sv.x
+                    && m.column < sv.x + sv.width
+                    && m.row >= sv.y
+                    && m.row < sv.y + sv.height
+                    && sv.width >= 1
+                    && sv.height >= 1
+                {
+                    let col = m.column;
+                    let row = m.row;
+                    picker.s = ((col - sv.x) as f32 / (sv.width.saturating_sub(1).max(1)) as f32)
+                        .clamp(0.0, 1.0);
+                    picker.v = (1.0
+                        - ((row - sv.y) as f32 + 0.5) / sv.height as f32)
+                        .clamp(0.0, 1.0);
+                } else if m.column >= hue.x
+                    && m.column < hue.x + hue.width
+                    && m.row >= hue.y
+                    && m.row < hue.y + hue.height
+                    && hue.width >= 1
+                    && hue.height >= 1
+                {
+                    let col = m.column;
+                    picker.h = (col - hue.x) as f32
+                        / (hue.width.saturating_sub(1).max(1)) as f32
+                        * 359.9;
+                }
+            }
+            return;
+        }
+
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(idx) = self.hit_test_palette(&m) {

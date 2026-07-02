@@ -42,6 +42,9 @@ pub struct Canvas {
     cells: Vec<Px>,  // row-major, len = width*height
     undo_stack: Vec<Snap>,
     redo_stack: Vec<Snap>,
+    /// Runtime, editable palette (indexed by the same u8 indices stored in cells).
+    /// Initialized to [`PALETTE`]; not touched by resize/undo/redo/snapshot.
+    pub palette: [(u8, u8, u8); 16],
 }
 
 impl Canvas {
@@ -53,6 +56,7 @@ impl Canvas {
             cells: vec![None; len],
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            palette: PALETTE,
         }
     }
 
@@ -131,10 +135,13 @@ impl Canvas {
         queue.push_back((x, y));
 
         while let Some((cx, cy)) = queue.pop_front() {
-            if self.get(cx, cy) != target {
+            // must bounds-check via index: get() reads OOB as None, which would
+            // match a None target and expand the BFS outside the canvas forever
+            let Some(i) = self.index(cx, cy) else { continue };
+            if self.cells[i] != target {
                 continue;
             }
-            self.set(cx, cy, px);
+            self.cells[i] = px;
             queue.push_back((cx + 1, cy));
             queue.push_back((cx - 1, cy));
             queue.push_back((cx, cy + 1));
@@ -270,7 +277,7 @@ impl Canvas {
                 let px = self.get(x as i32, y as i32);
                 let color = match px {
                     Some(i) => {
-                        let (r, g, b) = PALETTE[i as usize % PALETTE.len()];
+                        let (r, g, b) = self.palette[i as usize % self.palette.len()];
                         Rgba([r, g, b, 255])
                     }
                     None => BG,
@@ -288,4 +295,61 @@ impl Canvas {
         img.save(path)?;
         Ok(())
     }
+}
+
+/// h in [0,360), s and v in [0,1] → rgb.
+pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> (u8, u8, u8) {
+    let h = h.rem_euclid(360.0);
+    let s = s.clamp(0.0, 1.0);
+    let v = v.clamp(0.0, 1.0);
+
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+
+    let (r1, g1, b1) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+
+    let r = ((r1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let g = ((g1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    let b = ((b1 + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (r, g, b)
+}
+
+/// rgb → (h in [0,360), s, v in [0,1]).
+pub fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let rf = r as f32 / 255.0;
+    let gf = g as f32 / 255.0;
+    let bf = b as f32 / 255.0;
+
+    let max = rf.max(gf).max(bf);
+    let min = rf.min(gf).min(bf);
+    let delta = max - min;
+
+    let h = if delta.abs() < 1e-6 {
+        0.0
+    } else if max == rf {
+        60.0 * (((gf - bf) / delta).rem_euclid(6.0))
+    } else if max == gf {
+        60.0 * (((bf - rf) / delta) + 2.0)
+    } else {
+        60.0 * (((rf - gf) / delta) + 4.0)
+    };
+    let h = h.rem_euclid(360.0);
+
+    let s = if max.abs() < 1e-6 { 0.0 } else { delta / max };
+    let v = max;
+
+    (h, s.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
 }
