@@ -7,6 +7,12 @@ A small, stylish terminal painting app. Each terminal cell holds two pixels
 cargo run --release
 ```
 
+Or install the `idraw` binary to `~/.cargo/bin`:
+
+```
+cargo install --path .
+```
+
 ## Controls
 
 **Mouse** — left click/drag paints, right click/drag erases, wheel changes
