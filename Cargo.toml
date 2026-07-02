@@ -2,6 +2,7 @@
 name = "idraw"
 version = "0.1.0"
 edition = "2021"
+repository = "ssh://git@priv-github.com/bukomp/2i-draw.git"
 
 [dependencies]
 ratatui = "0.29"

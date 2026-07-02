@@ -1,4 +1,5 @@
 use crate::canvas::{Canvas, Px};
+use crate::update::UpdateStatus;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
@@ -77,6 +78,8 @@ pub struct App {
     pub show_help: bool,
     pub status: String, // transient message shown in status bar
     pub quit: bool,
+    pub update: UpdateStatus,
+    pub update_requested: bool,
     // Hit-test data, written by ui::draw each frame:
     pub canvas_area: Rect,              // inner canvas area (terminal coords)
     pub palette_cells: Vec<(Rect, u8)>, // clickable color swatches
@@ -106,6 +109,8 @@ impl App {
             show_help: false,
             status: "press ? for help".to_string(),
             quit: false,
+            update: UpdateStatus::Checking,
+            update_requested: false,
             canvas_area: Rect::default(),
             palette_cells: Vec::new(),
             tool_cells: Vec::new(),
@@ -293,6 +298,13 @@ impl App {
                     self.status = "undo".to_string();
                 } else {
                     self.status = "nothing to undo".to_string();
+                }
+            }
+            KeyCode::Char('U') => {
+                if matches!(self.update, UpdateStatus::Available { .. }) {
+                    self.update_requested = true;
+                } else {
+                    self.status = "no update available".to_string();
                 }
             }
             KeyCode::Char('r') => {

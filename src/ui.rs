@@ -1,5 +1,6 @@
 use crate::app::{App, Tool};
 use crate::canvas::PALETTE;
+use crate::update::UpdateStatus;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -162,6 +163,15 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
     // bottom hint
     if inner.height >= 1 {
         let hint_y = inner.y + inner.height - 1;
+        if matches!(app.update, UpdateStatus::Available { .. }) && hint_y > inner.y {
+            let update_y = hint_y - 1;
+            buf.set_string(
+                inner.x,
+                update_y,
+                "⬆ update — U",
+                Style::default().fg(SELECT_FG).add_modifier(Modifier::BOLD),
+            );
+        }
         buf.set_string(
             inner.x,
             hint_y,
@@ -345,7 +355,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(48, 26, area);
+    let popup = centered_rect(48, 27, area);
     frame.render_widget(Clear, popup);
 
     let lines = vec![
@@ -371,6 +381,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  u / r     undo / redo"),
         Line::from("  x         clear canvas"),
         Line::from("  s         save PNG"),
+        Line::from("  U         self-update from git"),
         Line::from("  ?         toggle this help"),
         Line::from("  q         quit"),
         Line::from("  Esc       deselect / quit"),

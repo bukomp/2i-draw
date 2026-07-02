@@ -38,5 +38,6 @@ the visible area and you pan around it (the title shows the `@ x,y` offset).
 | `x` | clear canvas |
 | `Shift`+arrows | pan the view |
 | `s` | save as `paintings/painting-NN.png` (8× scale, folder is gitignored) |
+| `U` | self-update when new commits are on `origin` (pull + reinstall + restart) |
 | `?` | help overlay |
 | `q` / `Esc` | quit |
