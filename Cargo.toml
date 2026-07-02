@@ -1,0 +1,13 @@
+[package]
+name = "idraw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ratatui = "0.29"
+image = { version = "0.25", default-features = false, features = ["png"] }
+anyhow = "1"
+
+[profile.release]
+lto = true
+strip = true
