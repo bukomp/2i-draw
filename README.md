@@ -34,7 +34,8 @@ the visible area and you pan around it (the title shows the `@ x,y` offset).
 | `y` / `p` | copy selection / paste at cursor |
 | `d` / `Del` | delete selection contents |
 | `Esc` | deselect (quits when nothing is selected) |
-| `c` | color picker: edit the selected palette slot (HSV square + hue bar; pixels drawn with that slot recolor live) |
+| `c` | color picker: edit the selected palette slot — HSV square + hue bar + RGBA sliders (`Tab` cycles focus, arrows adjust, mouse drags); alpha renders translucent and exports to PNG. Pixels drawn with that slot recolor live |
+| `a` | ASCII-art export: live preview overlay, `Enter` saves `paintings/ascii-NN.txt` |
 | `u` / `r` | undo / redo |
 | `x` | clear canvas |
 | `Shift`+arrows | pan the view |

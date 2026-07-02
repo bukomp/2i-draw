@@ -8,23 +8,23 @@ use image::{Rgba, RgbaImage};
 pub type Px = Option<u8>;
 
 /// 16-color, pico-8-inspired palette. Index 0..16.
-pub const PALETTE: [(u8, u8, u8); 16] = [
-    (0, 0, 0),       // 0  black
-    (29, 43, 83),    // 1  dark blue
-    (126, 37, 83),   // 2  dark purple
-    (0, 135, 81),    // 3  dark green
-    (171, 82, 54),   // 4  brown
-    (95, 87, 79),    // 5  dark grey
-    (194, 195, 199), // 6  light grey
-    (255, 241, 232), // 7  white
-    (255, 0, 77),    // 8  red
-    (255, 163, 0),   // 9  orange
-    (255, 236, 39),  // 10 yellow
-    (0, 228, 54),    // 11 green
-    (41, 173, 255),  // 12 blue
-    (131, 118, 156), // 13 lavender
-    (255, 119, 168), // 14 pink
-    (255, 204, 170), // 15 peach
+pub const PALETTE: [(u8, u8, u8, u8); 16] = [
+    (0, 0, 0, 255),       // 0  black
+    (29, 43, 83, 255),    // 1  dark blue
+    (126, 37, 83, 255),   // 2  dark purple
+    (0, 135, 81, 255),    // 3  dark green
+    (171, 82, 54, 255),   // 4  brown
+    (95, 87, 79, 255),    // 5  dark grey
+    (194, 195, 199, 255), // 6  light grey
+    (255, 241, 232, 255), // 7  white
+    (255, 0, 77, 255),    // 8  red
+    (255, 163, 0, 255),   // 9  orange
+    (255, 236, 39, 255),  // 10 yellow
+    (0, 228, 54, 255),    // 11 green
+    (41, 173, 255, 255),  // 12 blue
+    (131, 118, 156, 255), // 13 lavender
+    (255, 119, 168, 255), // 14 pink
+    (255, 204, 170, 255), // 15 peach
 ];
 
 const UNDO_CAP: usize = 100;
@@ -42,9 +42,9 @@ pub struct Canvas {
     cells: Vec<Px>,  // row-major, len = width*height
     undo_stack: Vec<Snap>,
     redo_stack: Vec<Snap>,
-    /// Runtime, editable palette (indexed by the same u8 indices stored in cells).
+    /// Runtime, editable palette (RGBA, indexed by the same u8 indices stored in cells).
     /// Initialized to [`PALETTE`]; not touched by resize/undo/redo/snapshot.
-    pub palette: [(u8, u8, u8); 16],
+    pub palette: [(u8, u8, u8, u8); 16],
 }
 
 impl Canvas {
@@ -277,8 +277,8 @@ impl Canvas {
                 let px = self.get(x as i32, y as i32);
                 let color = match px {
                     Some(i) => {
-                        let (r, g, b) = self.palette[i as usize % self.palette.len()];
-                        Rgba([r, g, b, 255])
+                        let (r, g, b, a) = self.palette[i as usize % self.palette.len()];
+                        Rgba([r, g, b, a])
                     }
                     None => BG,
                 };
@@ -294,6 +294,52 @@ impl Canvas {
 
         img.save(path)?;
         Ok(())
+    }
+
+    /// Render the canvas as ASCII art: one output char per column × 2-pixel row pair
+    /// (matches the on-screen half-block geometry). Luminance ramp " .:-=+*#%@";
+    /// lum(px) = (0.2126 r + 0.7152 g + 0.0722 b) / 255 * (a / 255), None = 0.
+    /// Char = RAMP[round(avg_lum_of_pair * 9)]; if either pixel of the pair is painted
+    /// but the index lands on 0, use '.' instead of ' ' (dark colors must stay visible).
+    /// Returns height.div_ceil(2) lines of exactly `width` chars.
+    pub fn to_ascii(&self) -> Vec<String> {
+        const RAMP: &[u8] = b" .:-=+*#%@";
+
+        let lum = |px: Px| -> f32 {
+            match px {
+                Some(i) => {
+                    let (r, g, b, a) = self.palette[i as usize % self.palette.len()];
+                    let l = (0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32) / 255.0;
+                    l * (a as f32 / 255.0)
+                }
+                None => 0.0,
+            }
+        };
+
+        let out_h = (self.height as usize).div_ceil(2);
+        let mut lines = Vec::with_capacity(out_h);
+
+        for oy in 0..out_h {
+            let y0 = oy as i32 * 2;
+            let y1 = y0 + 1;
+            let mut line = String::with_capacity(self.width as usize);
+            for x in 0..self.width as i32 {
+                let px0 = self.get(x, y0);
+                let px1 = self.get(x, y1);
+                let painted = px0.is_some() || px1.is_some();
+                let avg = (lum(px0) + lum(px1)) / 2.0;
+                let idx = (avg * 9.0).round().clamp(0.0, 9.0) as usize;
+                let ch = if painted && idx == 0 {
+                    '.'
+                } else {
+                    RAMP[idx] as char
+                };
+                line.push(ch);
+            }
+            lines.push(line);
+        }
+
+        lines
     }
 }
 

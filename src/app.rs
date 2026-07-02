@@ -69,15 +69,95 @@ pub struct Floating {
     pub cells: Vec<Px>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PickerFocus {
+    Sv,
+    Hue,
+    R,
+    G,
+    B,
+    A,
+}
+
+impl PickerFocus {
+    fn next(&self) -> PickerFocus {
+        match self {
+            PickerFocus::Sv => PickerFocus::Hue,
+            PickerFocus::Hue => PickerFocus::R,
+            PickerFocus::R => PickerFocus::G,
+            PickerFocus::G => PickerFocus::B,
+            PickerFocus::B => PickerFocus::A,
+            PickerFocus::A => PickerFocus::Sv,
+        }
+    }
+
+    fn prev(&self) -> PickerFocus {
+        match self {
+            PickerFocus::Sv => PickerFocus::A,
+            PickerFocus::Hue => PickerFocus::Sv,
+            PickerFocus::R => PickerFocus::Hue,
+            PickerFocus::G => PickerFocus::R,
+            PickerFocus::B => PickerFocus::G,
+            PickerFocus::A => PickerFocus::B,
+        }
+    }
+}
+
 pub struct PickerState {
     pub h: f32,
     pub s: f32,
     pub v: f32,
+    pub a: u8,
+    pub focus: PickerFocus,
 }
 
 impl PickerState {
     pub fn rgb(&self) -> (u8, u8, u8) {
         crate::canvas::hsv_to_rgb(self.h, self.s, self.v)
+    }
+
+    pub fn rgba(&self) -> (u8, u8, u8, u8) {
+        let (r, g, b) = self.rgb();
+        (r, g, b, self.a)
+    }
+
+    pub fn set_rgb(&mut self, r: u8, g: u8, b: u8) {
+        let (h, s, v) = crate::canvas::rgb_to_hsv(r, g, b);
+        self.h = h;
+        self.s = s;
+        self.v = v;
+    }
+
+    pub fn channel(&self, f: PickerFocus) -> u8 {
+        let (r, g, b) = self.rgb();
+        match f {
+            PickerFocus::R => r,
+            PickerFocus::G => g,
+            PickerFocus::B => b,
+            PickerFocus::A => self.a,
+            PickerFocus::Sv | PickerFocus::Hue => 0,
+        }
+    }
+
+    pub fn set_channel(&mut self, f: PickerFocus, val: u8) {
+        match f {
+            PickerFocus::R => {
+                let (_, g, b) = self.rgb();
+                self.set_rgb(val, g, b);
+            }
+            PickerFocus::G => {
+                let (r, _, b) = self.rgb();
+                self.set_rgb(r, val, b);
+            }
+            PickerFocus::B => {
+                let (r, g, _) = self.rgb();
+                self.set_rgb(r, g, val);
+            }
+            PickerFocus::A => {
+                self.a = val;
+            }
+            PickerFocus::Sv | PickerFocus::Hue => {}
+        }
     }
 }
 
@@ -103,10 +183,13 @@ pub struct App {
     pub picker: Option<PickerState>,
     pub picker_sv_area: Rect,  // written by ui each frame while the picker is open
     pub picker_hue_area: Rect,
+    pub picker_slider_areas: Vec<(Rect, PickerFocus)>, // written by ui each frame while the picker is open
+    pub ascii_preview: bool,
     // private:
     drag_last: Option<(i32, i32)>, // last mouse pixel during a stroke
     stroke_active: bool,
     save_counter: u32,
+    ascii_counter: u32,
     select_anchor: Option<(i32, i32)>,
     move_grab: Option<(i32, i32)>, // grab offset from floating origin
     clipboard: Option<(u16, u16, Vec<Px>)>,
@@ -136,9 +219,12 @@ impl App {
             picker: None,
             picker_sv_area: Rect::default(),
             picker_hue_area: Rect::default(),
+            picker_slider_areas: Vec::new(),
+            ascii_preview: false,
             drag_last: None,
             stroke_active: false,
             save_counter: 0,
+            ascii_counter: 0,
             select_anchor: None,
             move_grab: None,
             clipboard: None,
@@ -234,28 +320,75 @@ impl App {
                     self.status = "picker cancelled".to_string();
                 }
                 KeyCode::Enter => {
-                    let (r, g, b) = picker.rgb();
-                    self.canvas.palette[self.color as usize] = (r, g, b);
+                    let rgba = picker.rgba();
+                    self.canvas.palette[self.color as usize] = rgba;
                     self.picker = None;
-                    self.status = format!("color {} = #{:02X}{:02X}{:02X}", self.color, r, g, b);
+                    self.status = format!(
+                        "color {} = #{:02X}{:02X}{:02X}{:02X}",
+                        self.color, rgba.0, rgba.1, rgba.2, rgba.3
+                    );
                 }
-                KeyCode::Left => {
-                    picker.s = (picker.s - 0.02).clamp(0.0, 1.0);
+                KeyCode::Tab => {
+                    picker.focus = picker.focus.next();
                 }
-                KeyCode::Right => {
-                    picker.s = (picker.s + 0.02).clamp(0.0, 1.0);
-                }
-                KeyCode::Up => {
-                    picker.v = (picker.v + 0.02).clamp(0.0, 1.0);
-                }
-                KeyCode::Down => {
-                    picker.v = (picker.v - 0.02).clamp(0.0, 1.0);
+                KeyCode::BackTab => {
+                    picker.focus = picker.focus.prev();
                 }
                 KeyCode::Char('[') => {
                     picker.h = (picker.h - 4.0).rem_euclid(360.0);
                 }
                 KeyCode::Char(']') => {
                     picker.h = (picker.h + 4.0).rem_euclid(360.0);
+                }
+                KeyCode::Left => match picker.focus {
+                    PickerFocus::Sv => picker.s = (picker.s - 0.02).clamp(0.0, 1.0),
+                    PickerFocus::Hue => picker.h = (picker.h - 4.0).rem_euclid(360.0),
+                    PickerFocus::R | PickerFocus::G | PickerFocus::B | PickerFocus::A => {
+                        let f = picker.focus;
+                        let val = picker.channel(f).saturating_sub(1);
+                        picker.set_channel(f, val);
+                    }
+                },
+                KeyCode::Right => match picker.focus {
+                    PickerFocus::Sv => picker.s = (picker.s + 0.02).clamp(0.0, 1.0),
+                    PickerFocus::Hue => picker.h = (picker.h + 4.0).rem_euclid(360.0),
+                    PickerFocus::R | PickerFocus::G | PickerFocus::B | PickerFocus::A => {
+                        let f = picker.focus;
+                        let val = picker.channel(f).saturating_add(1);
+                        picker.set_channel(f, val);
+                    }
+                },
+                KeyCode::Up => match picker.focus {
+                    PickerFocus::Sv => picker.v = (picker.v + 0.02).clamp(0.0, 1.0),
+                    PickerFocus::Hue => {}
+                    PickerFocus::R | PickerFocus::G | PickerFocus::B | PickerFocus::A => {
+                        let f = picker.focus;
+                        let val = picker.channel(f).saturating_add(10);
+                        picker.set_channel(f, val);
+                    }
+                },
+                KeyCode::Down => match picker.focus {
+                    PickerFocus::Sv => picker.v = (picker.v - 0.02).clamp(0.0, 1.0),
+                    PickerFocus::Hue => {}
+                    PickerFocus::R | PickerFocus::G | PickerFocus::B | PickerFocus::A => {
+                        let f = picker.focus;
+                        let val = picker.channel(f).saturating_sub(10);
+                        picker.set_channel(f, val);
+                    }
+                },
+                _ => {}
+            }
+            return;
+        }
+
+        if self.ascii_preview {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('a') => {
+                    self.ascii_preview = false;
+                    self.status = "ascii preview closed".to_string();
+                }
+                KeyCode::Enter => {
+                    self.save_ascii();
                 }
                 _ => {}
             }
@@ -268,10 +401,21 @@ impl App {
                 return;
             }
             KeyCode::Char('c') => {
-                let (r, g, b) = self.canvas.palette[self.color as usize];
+                let (r, g, b, a) = self.canvas.palette[self.color as usize];
                 let (h, s, v) = crate::canvas::rgb_to_hsv(r, g, b);
-                self.picker = Some(PickerState { h, s, v });
+                self.picker = Some(PickerState {
+                    h,
+                    s,
+                    v,
+                    a,
+                    focus: PickerFocus::Sv,
+                });
                 self.status = format!("editing color {} — Enter apply, Esc cancel", self.color);
+                return;
+            }
+            KeyCode::Char('a') => {
+                self.ascii_preview = true;
+                self.status = "ascii preview — Enter save, Esc close".to_string();
                 return;
             }
             KeyCode::Char('q') => {
@@ -522,6 +666,32 @@ impl App {
         }
     }
 
+    fn save_ascii(&mut self) {
+        if let Err(e) = std::fs::create_dir_all("paintings") {
+            self.status = format!("save failed: {}", e);
+            return;
+        }
+        loop {
+            let name = format!("paintings/ascii-{:02}.txt", self.ascii_counter);
+            let path = std::path::Path::new(&name);
+            if !path.exists() {
+                let contents = self.canvas.to_ascii().join("\n") + "\n";
+                match std::fs::write(path, contents) {
+                    Ok(()) => {
+                        self.status = format!("saved {}", name);
+                        self.ascii_preview = false;
+                    }
+                    Err(e) => {
+                        self.status = format!("save failed: {}", e);
+                    }
+                }
+                self.ascii_counter += 1;
+                break;
+            }
+            self.ascii_counter += 1;
+        }
+    }
+
     fn mouse_to_canvas_px(&self, m: &MouseEvent) -> Option<(i32, i32)> {
         let area = self.canvas_area;
         if m.column >= area.x
@@ -603,6 +773,7 @@ impl App {
                 {
                     let col = m.column;
                     let row = m.row;
+                    picker.focus = PickerFocus::Sv;
                     picker.s = ((col - sv.x) as f32 / (sv.width.saturating_sub(1).max(1)) as f32)
                         .clamp(0.0, 1.0);
                     picker.v = (1.0
@@ -616,10 +787,38 @@ impl App {
                     && hue.height >= 1
                 {
                     let col = m.column;
+                    picker.focus = PickerFocus::Hue;
                     picker.h = (col - hue.x) as f32
                         / (hue.width.saturating_sub(1).max(1)) as f32
                         * 359.9;
+                } else {
+                    for (rect, focus) in self.picker_slider_areas.clone() {
+                        if m.column >= rect.x
+                            && m.column < rect.x + rect.width
+                            && m.row >= rect.y
+                            && m.row < rect.y + rect.height
+                            && rect.width >= 1
+                        {
+                            let col = m.column;
+                            let val = ((col - rect.x) as f32
+                                / (rect.width.saturating_sub(1).max(1)) as f32
+                                * 255.0)
+                                .round()
+                                .clamp(0.0, 255.0) as u8;
+                            picker.focus = focus;
+                            picker.set_channel(focus, val);
+                            break;
+                        }
+                    }
                 }
+            }
+            return;
+        }
+
+        if self.ascii_preview {
+            if matches!(m.kind, MouseEventKind::Down(_)) {
+                self.ascii_preview = false;
+                self.status = "ascii preview closed".to_string();
             }
             return;
         }

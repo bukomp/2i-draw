@@ -1,4 +1,4 @@
-use crate::app::{App, Tool};
+use crate::app::{App, PickerFocus, Tool};
 use crate::canvas::hsv_to_rgb;
 use crate::update::UpdateStatus;
 use ratatui::{
@@ -60,6 +60,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     draw_picker(frame, app);
+
+    if app.ascii_preview {
+        draw_ascii_preview(frame, app);
+    }
 }
 
 fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -135,7 +139,8 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let selected = app.color == idx;
             let marker = if selected { '▸' } else { ' ' };
-            let (r, g, b) = app.canvas.palette[idx as usize];
+            let (r, g, b, a) = app.canvas.palette[idx as usize];
+            let (r, g, b) = blend_rgba(r, g, b, a, (30, 28, 44));
             buf.set_string(x, y, marker.to_string(), Style::default());
             let swatch_rect = Rect::new(x, y, SWATCH_W, 1);
             buf.set_string(
@@ -287,16 +292,52 @@ fn effective_px(app: &App, x: i32, y: i32) -> Option<u8> {
     app.canvas.get(x, y)
 }
 
+/// Alpha-blend an (r,g,b,a) color over an opaque `base` color; a==255 is a no-op.
+fn blend_rgba(r: u8, g: u8, b: u8, a: u8, base: (u8, u8, u8)) -> (u8, u8, u8) {
+    if a >= 255 {
+        return (r, g, b);
+    }
+    let blend = |c: u8, base: u8| -> u8 {
+        ((c as u16 * a as u16 + base as u16 * (255 - a as u16)) / 255) as u8
+    };
+    (blend(r, base.0), blend(g, base.1), blend(b, base.2))
+}
+
+/// The checkerboard base color a cell would show if it were empty (None pixel),
+/// matching the choice made in the `None` arm of `pixel_color` below.
+fn checker_rgb(x: i32, y: i32, in_sel: bool) -> (u8, u8, u8) {
+    let c = if in_sel {
+        if (x + y) % 2 == 0 {
+            SEL_EMPTY_A
+        } else {
+            SEL_EMPTY_B
+        }
+    } else if (x + y) % 2 == 0 {
+        DIM_BG_A
+    } else {
+        DIM_BG_B
+    };
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
+}
+
 fn pixel_color(
     px: Option<u8>,
     x: i32,
     y: i32,
     in_sel: bool,
-    palette: &[(u8, u8, u8); 16],
+    palette: &[(u8, u8, u8, u8); 16],
 ) -> Color {
     match px {
         Some(i) => {
-            let (r, g, b) = palette[i as usize % palette.len()];
+            let (r, g, b, a) = palette[i as usize % palette.len()];
+            let (r, g, b) = if a < 255 {
+                blend_rgba(r, g, b, a, checker_rgb(x, y, in_sel))
+            } else {
+                (r, g, b)
+            };
             if in_sel {
                 let (ar, ag, ab) = SEL_TINT;
                 let blend = |c: u8, a: u8| -> u8 {
@@ -329,7 +370,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    let (r, g, b) = app.canvas.palette[app.color as usize % app.canvas.palette.len()];
+    let (r, g, b, a) = app.canvas.palette[app.color as usize % app.canvas.palette.len()];
+    let (r, g, b) = blend_rgba(r, g, b, a, (30, 28, 44));
     let left = format!(
         "{} {} │ size {} │ color ",
         app.tool.icon(),
@@ -363,7 +405,7 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let popup = centered_rect(48, 28, area);
+    let popup = centered_rect(48, 29, area);
     frame.render_widget(Clear, popup);
 
     let lines = vec![
@@ -390,6 +432,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from("  u / r     undo / redo"),
         Line::from("  x         clear canvas"),
         Line::from("  s         save PNG"),
+        Line::from("  a         ascii export preview"),
         Line::from("  U         self-update from git"),
         Line::from("  ?         toggle this help"),
         Line::from("  q         quit"),
@@ -413,9 +456,10 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
         return;
     };
     let (h, s, v) = (picker.h, picker.s, picker.v);
-    let (r, g, b) = hsv_to_rgb(h, s, v);
+    let (r, g, b) = picker.rgb();
+    let focus = picker.focus;
 
-    let popup = centered_rect(44, 15, frame.area());
+    let popup = centered_rect(46, 20, frame.area());
     frame.render_widget(Clear, popup);
 
     let title = format!(" color {} ", app.color);
@@ -427,17 +471,33 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    app.picker_slider_areas.clear();
+
     if inner.width == 0 || inner.height == 0 {
         app.picker_sv_area = Rect::default();
         app.picker_hue_area = Rect::default();
         return;
     }
 
-    let sv_h = inner.height.saturating_sub(4).max(1).min(inner.height);
+    // Layout: SV square, gap, hue bar, gap, 4 slider rows, gap, readout.
+    const FIXED_ROWS: u16 = 9; // 1 gap + 1 hue + 1 gap + 4 sliders + 1 gap + 1 readout
+    let bottom = inner.y + inner.height; // exclusive
+    let sv_h = inner
+        .height
+        .saturating_sub(FIXED_ROWS)
+        .max(4)
+        .min(inner.height);
     let sv_area = Rect::new(inner.x, inner.y, inner.width, sv_h);
-    let hue_y = (inner.y + sv_h + 1).min(inner.y + inner.height - 1);
+    let hue_y = (inner.y + sv_h + 1).min(bottom.saturating_sub(1));
     let hue_area = Rect::new(inner.x, hue_y, inner.width, 1);
-    let readout_y = inner.y + inner.height - 1;
+    let slider0_y = (hue_y + 2).min(bottom.saturating_sub(1));
+    let slider_ys = [
+        slider0_y,
+        (slider0_y + 1).min(bottom.saturating_sub(1)),
+        (slider0_y + 2).min(bottom.saturating_sub(1)),
+        (slider0_y + 3).min(bottom.saturating_sub(1)),
+    ];
+    let readout_y = bottom.saturating_sub(1);
 
     app.picker_sv_area = sv_area;
     app.picker_hue_area = hue_area;
@@ -498,11 +558,73 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
         }
     }
 
+    // Channel sliders (R, G, B, A)
+    let channels: [(PickerFocus, char); 4] = [
+        (PickerFocus::R, 'R'),
+        (PickerFocus::G, 'G'),
+        (PickerFocus::B, 'B'),
+        (PickerFocus::A, 'A'),
+    ];
+    if inner.width > 6 {
+        let bar_w = inner.width.saturating_sub(6);
+        for (idx, (cfocus, label)) in channels.iter().enumerate() {
+            let row_y = slider_ys[idx];
+            if row_y >= bottom {
+                continue;
+            }
+            let value = picker.channel(*cfocus);
+            let focused = focus == *cfocus;
+            let label_style = if focused {
+                Style::default().fg(SELECT_FG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            buf.set_string(inner.x, row_y, &format!("{} ", label), label_style);
+
+            let bar_x = inner.x + 2;
+            let filled = ((value as f32 / 255.0) * bar_w as f32).round() as u16;
+            let filled = filled.min(bar_w);
+            let pure_color = match cfocus {
+                PickerFocus::R => Color::Rgb(value, 0, 0),
+                PickerFocus::G => Color::Rgb(0, value, 0),
+                PickerFocus::B => Color::Rgb(0, 0, value),
+                PickerFocus::A => Color::Rgb(value, value, value),
+                _ => Color::White,
+            };
+            for col in 0..bar_w {
+                let cx = bar_x + col;
+                if col < filled {
+                    buf.set_string(cx, row_y, "█", Style::default().fg(pure_color));
+                } else {
+                    buf.set_string(
+                        cx,
+                        row_y,
+                        "░",
+                        Style::default().add_modifier(Modifier::DIM),
+                    );
+                }
+            }
+
+            let value_text = format!(" {:>3}", value);
+            let value_style = if focused {
+                Style::default().fg(SELECT_FG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            buf.set_string(bar_x + bar_w, row_y, &value_text, value_style);
+
+            let bar_rect = Rect::new(bar_x, row_y, bar_w, 1);
+            app.picker_slider_areas.push((bar_rect, *cfocus));
+        }
+    }
+
     // Readout
     if inner.width >= 1 {
-        let hex = format!("#{:02X}{:02X}{:02X}", r, g, b);
+        let (_, _, _, pa) = picker.rgba();
+        let (sr, sg, sb) = blend_rgba(r, g, b, pa, (30, 28, 44));
+        let hex = format!("#{:02X}{:02X}{:02X}{:02X}", r, g, b, pa);
         let text = format!(
-            "  ██ {}   ←→ s · ↑↓ v · [ ] h · Enter ✓ · Esc ✗",
+            "  ██ {}  Tab focus · arrows adjust · Enter ✓ Esc ✗",
             hex
         );
         let truncated: String = text.chars().take(inner.width as usize).collect();
@@ -519,8 +641,57 @@ fn draw_picker(frame: &mut Frame, app: &mut App) {
                 inner.x + 2,
                 readout_y,
                 "██",
-                Style::default().fg(Color::Rgb(r, g, b)),
+                Style::default().fg(Color::Rgb(sr, sg, sb)),
             );
         }
     }
+}
+
+/// Render the ASCII-art export preview overlay covering (most of) the canvas panel.
+fn draw_ascii_preview(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let popup = centered_rect(
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+        area,
+    );
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(" ascii preview — Enter save · Esc close ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(ACCENT));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let lines = app.canvas.to_ascii();
+    let skip = (app.view_y / 2) as usize;
+    let view_x = app.view_x as usize;
+    let style = Style::default()
+        .fg(Color::Rgb(220, 220, 230))
+        .bg(Color::Rgb(12, 12, 16));
+
+    let rendered: Vec<Line> = lines
+        .iter()
+        .skip(skip)
+        .take(inner.height as usize)
+        .map(|l| {
+            let chars: Vec<char> = l.chars().collect();
+            let end = (view_x + inner.width as usize).min(chars.len());
+            let text: String = if view_x < chars.len() {
+                chars[view_x..end].iter().collect()
+            } else {
+                String::new()
+            };
+            Line::from(Span::styled(text, style))
+        })
+        .collect();
+
+    let para = Paragraph::new(rendered).style(style);
+    frame.render_widget(para, inner);
 }
